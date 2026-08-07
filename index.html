@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>离线TXT阅读器‑PiperWASM</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            max-width: 720px;
+            margin: 16px auto;
+            padding: 0 12px;
+            font-size: 18px;
+            line-height: 1.8;
+        }
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin:12px 0;
+        }
+        button {
+            font-size: 17px;
+            padding: 12px 16px;
+            min-height: 48px;
+            min-width: 100px;
+            border-radius: 8px;
+            border: 1px solid #999;
+            background: #f8f8f8;
+        }
+        button:disabled{
+            background:#cccccc;
+        }
+        button:active {
+            background: #e0e0e0;
+        }
+        input[type="file"] {
+            font-size: 16px;
+            padding: 8px 0;
+        }
+        .speed-box {
+            display: flex;
+            align-items: center;
+            gap:10px;
+            flex-wrap: wrap;
+            margin:12px 0;
+        }
+        input[type="range"] {
+            flex:1;
+            height:30px;
+        }
+        #progressBar {
+            width:100%;
+            height:24px;
+            margin:10px 0;
+        }
+        #textBox {
+            margin-top:16px;
+            padding:14px;
+            min-height: 400px;
+            white-space: pre-wrap;
+            border:1px solid #ccc;
+            border-radius:8px;
+            font-size:17px;
+            line-height:1.9;
+        }
+        #status {
+            margin:8px 0;
+            color:#333;
+            white-space:pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <input type="file" id="fileInput" accept=".txt">
+    </div>
+    <div class="btn-group">
+        <button id="playBtn" disabled>播放朗读</button>
+        <button id="pauseBtn" disabled>暂停</button>
+        <button id="prevBtn">上一页</button>
+        <button id="nextBtn">下一页</button>
+    </div>
+    <div class="speed-box">
+        <label>语速：</label>
+        <input type="range" id="speedSlider" min="0.4" max="2.2" step="0.1" value="1.0">
+        <button id="resetSpeed">重置1.0倍速</button>
+    </div>
+    <div>
+        <input type="range" id="progressBar" min="0" max="100" value="0">
+    </div>
+    <div id="status">正在初始化Piper离线TTS，首次打开需要下载中文模型...</div>
+    <div id="textBox">请选择TXT小说文件</div>
+    <audio id="audioPlayer">
+
+<script type="module">
+// 引入piper‑tts‑web CDN
+import * as PiperTts from 'https://cdn.jsdelivr.net/npm/@the-vedantic-coder/piper-tts-web@0.0.10/+esm';
+
+document.addEventListener('DOMContentLoaded',async ()=>{
+    const statusDom = document.getElementById("status");
+    const textDom = document.getElementById("textBox");
+    const fileInput = document.getElementById("fileInput");
+    const playBtn = document.getElementById("playBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const progressBar = document.getElementById("progressBar");
+    const speedSlider = document.getElementById("speedSlider");
+    const resetSpeed = document.getElementById("resetSpeed");
+    const audioPlayer = document.getElementById("audioPlayer");
+
+    let bookText = "";
+    let readPos = 0;
+    const pageSize = 800;
+    let speechRate = 1.0;
+    let isReading = false;
+    let piperReady = false;
+    const voiceId = "zh_CN-huayan-medium";
+
+    speedSlider.value = speechRate;
+
+    function setStatus(text){
+        statusDom.innerText = text;
+    }
+
+    // 初始化模型，CDN自动下载，缓存浏览器本地
+    try{
+        setStatus("正在下载中文语音模型，请稍候（约45MB，仅首次）");
+        await PiperTts.download(voiceId,(prog)=>{
+            const p = Math.round(prog.loaded/prog.total*100);
+            setStatus(`下载语音模型：${p}%`);
+        });
+        piperReady = true;
+        playBtn.disabled = false;
+        pauseBtn.disabled = false;
+        setStatus("✅语音模型就绪，请选择TXT文件");
+    }catch(e){
+        setStatus("❌模型加载失败，请使用Chrome/Edge浏览器："+e.message);
+        return;
+    }
+
+    fileInput.onchange = async (e)=>{
+        const file = e.target.files[0];
+        if(!file){
+            setStatus("未选择文件");
+            return;
+        }
+        setStatus("正在读取文件...");
+        const buf = await file.arrayBuffer();
+        let content = "";
+        try {
+            content = new TextDecoder("utf-8",{fatal:true}).decode(buf);
+        } catch {
+            content = new TextDecoder("gbk").decode(buf);
+        }
+        bookText = content;
+        readPos = 0;
+        setStatus(`加载完成，总字符：${bookText.length}`);
+        renderPage();
+    }
+
+    function renderPage(){
+        if(!bookText){
+            textDom.innerText = "请选择TXT小说文件";
+            return;
+        }
+        const pageText = bookText.slice(readPos, readPos + pageSize);
+        textDom.innerText = pageText;
+        const percent = Math.floor((readPos / bookText.length) * 100);
+        progressBar.value = percent;
+    }
+
+    function stopPlay(){
+        isReading = false;
+        audioPlayer.pause();
+        audioPlayer.src = "";
+        setStatus("已停止朗读");
+    }
+
+    // 核心：WASM合成音频，Audio标签播放，onended自动读下一段，安卓无安全限制
+    async function synthesizeAndPlay(){
+        if(!isReading || readPos >= bookText.length){
+            stopPlay();
+            setStatus("全书朗读完毕");
+            return;
+        }
+        setStatus("🧠AI合成语音中...");
+        const seg = bookText.slice(readPos, readPos + pageSize);
+        const wavBlob = await PiperTts.predict({
+            text:seg,
+            voiceId:voiceId
+        });
+        setStatus("🔊正在朗读");
+        const url = URL.createObjectURL(wavBlob);
+        audioPlayer.src = url;
+        audioPlayer.playbackRate = speechRate;
+        audioPlayer.onended = ()=>{
+            URL.revokeObjectURL(url);
+            readPos += pageSize;
+            renderPage();
+            // 自动递归调用，安卓浏览器允许，audio标签不受手势限制
+            synthesizeAndPlay();
+        }
+        await audioPlayer.play();
+    }
+
+    playBtn.onclick = async ()=>{
+        if(!piperReady){
+            setStatus("语音模型还未就绪");
+            return;
+        }
+        if(!bookText){
+            setStatus("请先选择TXT文件");
+            return;
+        }
+        if(isReading){
+            return;
+        }
+        isReading = true;
+        synthesizeAndPlay();
+    }
+
+    pauseBtn.onclick = ()=>{
+        stopPlay();
+    }
+
+    prevBtn.onclick = ()=>{
+        stopPlay();
+        readPos = Math.max(0, readPos - pageSize);
+        renderPage();
+    }
+
+    nextBtn.onclick = ()=>{
+        stopPlay();
+        readPos += pageSize;
+        renderPage();
+    }
+
+    speedSlider.oninput = ()=>{
+        speechRate = Number(speedSlider.value);
+        audioPlayer.playbackRate = speechRate;
+    }
+
+    resetSpeed.onclick = ()=>{
+        speechRate = 1.0;
+        speedSlider.value = 1.0;
+        audioPlayer.playbackRate = speechRate;
+    }
+
+    progressBar.oninput = ()=>{
+        stopPlay();
+        const pct = Number(progressBar.value);
+        readPos = Math.floor(bookText.length * pct / 100);
+        renderPage();
+    }
+
+    renderPage();
+})
+</script>
+</body>
+</html>
