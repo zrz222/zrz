@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh‑CN">
+<head>
+    <meta charset="UTF‑8">
+    <meta name="viewport" content="width=device‑width, initial‑scale=1.0">
+    <title>离线TXT阅读器</title>
+    <style>
+        body {
+            max‑width: 720px;
+            margin: 20px auto;
+            padding: 0 16px;
+            font‑size: 17px;
+            line‑height: 1.75;
+        }
+        #textBox {
+            margin‑top:16px;
+            padding:12px;
+            min‑height:300px;
+            white‑space: pre‑wrap;
+            border:1px solid #ccc;
+            border‑radius:6px;
+        }
+        div{margin:10px 0;}
+    </style>
+</head>
+<body>
+    <div>
+        <input type="file" id="fileInput" accept=".txt">
+    </div>
+    <div>
+        <button id="playBtn">播放朗读</button>
+        <button id="pauseBtn">暂停</button>
+        <button id="prevBtn">上一页</button>
+        <button id="nextBtn">下一页</button>
+    </div>
+    <div>
+        <label>语速：</label>
+        <input type="range" id="speedSlider" min="0.4" max="2.2" step="0.1" value="1.0">
+        <button id="resetSpeed">重置1.0倍速</button>
+    </div>
+    <div>
+        <input type="range" id="progressBar" min="0" max="100" value="0" style="width:100%;">
+    </div>
+    <div id="status"></div>
+    <div id="textBox"></div>
+
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+    const statusDom = document.getElementById("status");
+    const textDom = document.getElementById("textBox");
+    const fileInput = document.getElementById("fileInput");
+    const playBtn = document.getElementById("playBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const progressBar = document.getElementById("progressBar");
+    const speedSlider = document.getElementById("speedSlider");
+    const resetSpeed = document.getElementById("resetSpeed");
+
+    let bookText = "";
+    let readPos = 0;
+    const pageSize = 800;
+    let isSpeak = false;
+    let speechRate = 1.0;
+
+    speedSlider.value = speechRate;
+
+    function setStatus(text){
+        statusDom.innerText = text;
+    }
+
+    // 选择txt文件
+    fileInput.onchange = async (e)=>{
+        const file = e.target.files[0];
+        if(!file){
+            setStatus("未选择文件");
+            return;
+        }
+        const buf = await file.arrayBuffer();
+        let content = new TextDecoder("utf‑8",{fatal:false}).decode(buf);
+        if(content.includes("�")){
+            content = new TextDecoder("gbk").decode(buf);
+        }
+        bookText = content;
+        readPos = 0;
+        setStatus(`加载完成，总字符：${bookText.length}`);
+        renderPage();
+    }
+
+    // 渲染一页
+    function renderPage(){
+        if(!bookText){
+            textDom.innerText = "请选择TXT小说文件";
+            return;
+        }
+        const pageText = bookText.slice(readPos, readPos + pageSize);
+        textDom.innerText = pageText;
+        const percent = Math.floor((readPos / bookText.length) * 100);
+        progressBar.value = percent;
+    }
+
+    // 停止语音
+    function stopSpeak(){
+        window.speechSynthesis.cancel();
+        isSpeak = false;
+    }
+
+    // 朗读
+    async function speakCurrent(){
+        stopSpeak();
+        if(readPos >= bookText.length){
+            setStatus("全书朗读完毕");
+            return;
+        }
+        isSpeak = true;
+        setStatus("正在朗读");
+        const seg = bookText.slice(readPos, readPos + pageSize);
+        const u = new SpeechSynthesisUtterance(seg);
+        u.lang = "zh‑CN";
+        u.rate = speechRate;
+        u.onend = ()=>{
+            readPos += pageSize;
+            renderPage();
+            if(isSpeak) speakCurrent();
+        }
+        window.speechSynthesis.speak(u);
+    }
+
+    playBtn.onclick = ()=>{
+        if(!bookText){
+            setStatus("请先选择TXT文件");
+            return;
+        }
+        stopSpeak();
+        isSpeak = true;
+        speakCurrent();
+    }
+
+    pauseBtn.onclick = ()=>{
+        stopSpeak();
+        setStatus("已暂停");
+    }
+
+    prevBtn.onclick = ()=>{
+        stopSpeak();
+        readPos = Math.max(0, readPos - pageSize);
+        renderPage();
+    }
+
+    nextBtn.onclick = ()=>{
+        stopSpeak();
+        readPos += pageSize;
+        renderPage();
+    }
+
+    speedSlider.oninput = ()=>{
+        speechRate = Number(speedSlider.value);
+    }
+
+    resetSpeed.onclick = ()=>{
+        speechRate = 1.0;
+        speedSlider.value = 1.0;
+    }
+
+    progressBar.oninput = ()=>{
+        stopSpeak();
+        const pct = Number(progressBar.value);
+        readPos = Math.floor(bookText.length * pct / 100);
+        renderPage();
+    }
+
+    renderPage();
+})
+</script>
+</body>
+</html>
