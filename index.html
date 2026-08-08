@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>TXT播书阅读器｜网页版</title>
+    <style>
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{max-width:720px;margin:16px auto;padding:0 12px;font-size:18px;line-height:1.8;}
+        .btn-wrap{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;}
+        button{font-size:17px;padding:12px 14px;min-height:48px;border-radius:8px;border:1px solid #777;background:#f7f7f7;}
+        button:active{background:#dddddd;}
+        .speed-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;}
+        input[type="range"]{flex:1;height:30px;}
+        #progressBar{width:100%;height:24px;margin:10px 0;}
+        #textBox{margin-top:14px;padding:14px;min-height:420px;white-space:pre-wrap;border:1px solid #bbbbbb;border-radius:8px;font-size:17px;line-height:1.9;}
+        #status{margin:8px 0 4px;}
+    </style>
+</head>
+<body>
+    <div><input type="file" id="fileInput" accept=".txt"></div>
+    <div class="btn-wrap">
+        <button id="playBtn">播放 / 暂停</button>
+        <button id="prevBtn">上一页</button>
+        <button id="nextBtn">下一页</button>
+    </div>
+    <div class="speed-row">
+        <label>语速</label>
+        <input type="range" id="speedSlider" min="0.4" max="2.2" step="0.1" value="1">
+        <button id="resetSpeed">重置1倍</button>
+    </div>
+    <input type="range" id="progressBar" min="0" max="100" value="0">
+    <div id="status">请选择Z‑Library下载的TXT文件</div>
+    <div id="textBox">请选择TXT小说</div>
+
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+    const fileInput = document.getElementById('fileInput');
+    const playBtn = document.getElementById('playBtn');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const speedSlider = document.getElementById('speedSlider');
+    const resetSpeed = document.getElementById('resetSpeed');
+    const progressBar = document.getElementById('progressBar');
+    const statusDom = document.getElementById('status');
+    const textBox = document.getElementById('textBox');
+
+    let bookText = "";
+    let readPos = 0;
+    const pageSize = 800;
+    const pageGapMs = 350; //翻页间隔，250‑600ms，数值越小翻页越紧凑
+    let speechRate = 1.0;
+    let isPlaying = false;
+    let timerId = null;
+
+    function setStatus(s){ statusDom.innerText = s; }
+
+    //渲染当前页
+    function renderPage(){
+        const slice = bookText.slice(readPos, readPos + pageSize);
+        textBox.innerText = slice;
+        const pct = bookText.length>0 ? Math.floor(readPos / bookText.length * 100) : 0;
+        progressBar.value = pct;
+    }
+
+    //TXT读取，兼容Z‑Library GBK UTF‑8
+    fileInput.onchange = async e=>{
+        const f = e.target.files[0];
+        if(!f) return;
+        setStatus("读取TXT中...");
+        const buf = await f.arrayBuffer();
+        try{
+            bookText = new TextDecoder("utf‑8",{fatal:true}).decode(buf);
+        }catch{
+            bookText = new TextDecoder("gbk").decode(buf);
+        }
+        readPos = 0;
+        renderPage();
+        setStatus(`加载完成，总字符：${bookText.length}`);
+    }
+
+    //停止播放公共函数
+    function stopRead(){
+        isPlaying = false;
+        window.speechSynthesis.cancel();
+        clearTimeout(timerId);
+    }
+
+    //一次性预加载多页进语音队列，浏览器允许，规避onend异步拦截
+    function startAutoRead(){
+        if(!bookText){
+            setStatus("请先选择TXT书籍");
+            return;
+        }
+        window.speechSynthesis.cancel();
+        clearTimeout(timerId);
+        isPlaying = true;
+
+        function enqueuePages(){
+            if(!isPlaying || readPos >= bookText.length){
+                isPlaying = false;
+                setStatus("全书朗读结束");
+                return;
+            }
+            //连续取3页送入语音队列
+            let feedText = "";
+            for(let i=0;i<3;i++){
+                const seg = bookText.slice(readPos, readPos+pageSize);
+                if(!seg) break;
+                feedText += seg;
+                readPos += pageSize;
+            }
+            //语音播报
+            const utter = new SpeechSynthesisUtterance(feedText);
+            utter.rate = speechRate;
+            window.speechSynthesis.speak(utter);
+
+            //估算朗读耗时：每秒约2.8汉字
+            const charCount = feedText.length;
+            const estMs = (charCount / 2.8 / speechRate) * 1000 + pageGapMs;
+            renderPage();
+            //时间到继续喂下一批
+            timerId = setTimeout(enqueuePages, estMs);
+        }
+        enqueuePages();
+    }
+
+    //同一个按钮切换播放暂停
+    playBtn.onclick = ()=>{
+        if(isPlaying){
+            stopRead();
+            setStatus("已暂停");
+        }else{
+            startAutoRead();
+            setStatus("正在朗读...");
+        }
+    }
+
+    prevBtn.onclick = ()=>{
+        stopRead();
+        readPos = Math.max(0, readPos - pageSize);
+        renderPage();
+    }
+    nextBtn.onclick = ()=>{
+        stopRead();
+        readPos += pageSize;
+        renderPage();
+    }
+
+    //修复：拖动语速滑块，播放中立刻刷新
+    speedSlider.oninput = ()=>{
+        speechRate = Number(speedSlider.value);
+        if(isPlaying){
+            stopRead();
+            startAutoRead();
+        }
+    }
+
+    //修复重置按钮：播放状态下重置，重启朗读，语速立即生效
+    resetSpeed.onclick = ()=>{
+        speechRate = 1.0;
+        speedSlider.value = 1.0;
+        if(isPlaying){
+            stopRead();
+            startAutoRead();
+        }
+        setStatus("语速已重置1.0倍");
+    }
+
+    progressBar.oninput = ()=>{
+        stopRead();
+        const val = Number(progressBar.value);
+        readPos = Math.floor(val / 100 * bookText.length);
+        renderPage();
+    }
+})
+</script>
+</body>
+</html>
